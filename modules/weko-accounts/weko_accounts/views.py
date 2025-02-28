@@ -45,6 +45,7 @@ from invenio_db import db
 from .api import ShibUser
 from .utils import generate_random_str, parse_attributes
 from invenio_accounts.models import Role
+from weko_index.models import Index
 
 _app = LocalProxy(lambda: current_app.extensions['weko-admin'].app)
 
@@ -277,6 +278,8 @@ def update_roles(map_group_list, existing_roles):
     config = current_app.config['WEKO_ACCOUNTS_GAKUNIN_GROUP_PATTERN_DICT']
     prefix = config['prefix']
     role_mapping = config['role_mapping']
+    update_browsing_permission = current_app.config.get('WEKO_INNDEXTREE_GAKUNIN_GROUP_DEFAULT_BROWSING_PERMISSION', False)
+    update_contribute_permission = current_app.config.get('WEKO_INNDEXTREE_GAKUNIN_GROUP_DEFAULT_CONTRIBUTE_PERMISSION', False)
 
     with db.session.begin_nested():
         # 既存のロールを更新または追加
@@ -288,12 +291,48 @@ def update_roles(map_group_list, existing_roles):
                 role.description = ""  # 必要に応じて説明を更新
             else:
                 db.session.add(Role(name=mapped_role_name, description=""))
+                db.session.flush()  # 新しいロールのIDを取得するためにフラッシュ
+                role = Role.query.filter_by(name=mapped_role_name).first()
 
-        # 不要なロールを削除
+            # 不要なロールを削除
         for role_name in existing_roles:
             if role_name not in map_group_list:
                 role_to_remove = Role.query.filter_by(name=role_name).one()
                 db.session.delete(role_to_remove)
+
+        # WEKO_INNDEXTREE_GAKUNIN_GROUP_DEFAULT_BROWSING_PERMISSIONがTrueの場合、Indexテーブルを更新
+        if update_browsing_permission:
+            for role_name in map_group_list:
+                mapped_role_name = role_mapping.get(role_name[len(prefix) + 1:], role_name)
+                role = Role.query.filter_by(name=mapped_role_name).first()
+                if role:
+                    index = Index.query.filter_by(browsing_role=str(role.id)).first()
+                    if index:
+                        index.browsing_role = str(role.id)
+                    else:
+                        new_index = Index(browsing_role=str(role.id))
+                        db.session.add(new_index)
+
+        # WEKO_INNDEXTREE_GAKUNIN_GROUP_DEFAULT_CONTRIBUTE_PERMISSIONがTrueの場合、Indexテーブルを更新
+        if update_contribute_permission:
+            for role_name in map_group_list:
+                mapped_role_name = role_mapping.get(role_name[len(prefix) + 1:], role_name)
+                role = Role.query.filter_by(name=mapped_role_name).first()
+                if role:
+                    index = Index.query.filter_by(contribute_role=str(role.id)).first()
+                    if index:
+                        index.contribute_role = str(role.id)
+                    else:
+                        new_index = Index(contribute_role=str(role.id))
+                        db.session.add(new_index)
+
+        # 削除されたロールに関連するIndexエントリを削除
+        for role_name in existing_roles:
+            if role_name not in map_group_list:
+                role_to_remove = Role.query.filter_by(name=role_name).one()
+                if role_to_remove:
+                    Index.query.filter_by(browsing_role=str(role_to_remove.id)).delete()
+                    Index.query.filter_by(contribute_role=str(role_to_remove.id)).delete()
 
     db.session.commit()
 
